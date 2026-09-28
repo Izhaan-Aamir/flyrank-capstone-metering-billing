@@ -1,310 +1,417 @@
-# Evidence
+# Build Log
 
-This document records concrete evidence for the FlyRank Usage Metering & Billing Engine capstone.
+This document records the development process for the FlyRank AI Usage Metering & Billing Engine capstone.
 
-Evidence is added incrementally as each requirement is implemented.
+The capstone encourages AI-assisted development but requires the developer to document where AI helped, where it was wrong, and what was changed.
+
+---
+
+# Stage 0 — Project Setup + Architecture Design
+
+## Work completed
+
+Created the dedicated capstone repository:
+
+```text
+flyrank-capstone-metering-billing
+```
+
+Established the project structure and documented the architecture before implementing the application.
+
+Technology choices:
+
+* Python
+* FastAPI
+* PostgreSQL
+* Docker
+* Docker Compose
+* Stripe test mode
+* pytest
+* Git/GitHub
+
+The design established:
+
+* Free and Pro plans
+* API-call and AI-token usage types
+* tenant-based data ownership
+* usage events
+* idempotency strategy
+* quota enforcement
+* cost calculation
+* Stripe Checkout
+* Stripe webhooks
+* background processing
+* evidence-driven development
+
+The project was intentionally divided into stages so each major area could be implemented and tested independently.
 
 ---
 
 # Stage 1 — Database Foundation
 
-## Evidence 1 — PostgreSQL Container
+## Work completed
 
-### Requirement
+Implemented the PostgreSQL foundation using Docker Compose.
 
-The project requires real persistent database storage.
-
-### Verification
-
-Command:
-
-```powershell
-docker compose ps
-```
-
-Observed result:
+Created:
 
 ```text
-flyrank-capstone-db
-postgres:16-alpine
-Up
-healthy
-0.0.0.0:5432->5432/tcp
+migrations/001_initial_schema.sql
+scripts/seed.py
 ```
 
-### Result
-
-PostgreSQL 16 is running through Docker Compose and reports a healthy status.
-
----
-
-## Evidence 2 — Database Tables
-
-### Requirement
-
-The database must contain the core persistence model for tenants, plans, subscriptions, and usage events.
-
-### Verification
-
-Command:
-
-```powershell
-docker compose exec db psql -P pager=off -U capstone_user -d capstone_db -c "\dt"
-```
-
-Observed tables:
+Database tables:
 
 ```text
-plans
-stripe_events
-subscriptions
 tenants
+plans
+subscriptions
 usage_events
+stripe_events
 ```
 
-### Result
+Added:
 
-The required core tables exist in PostgreSQL.
+* primary keys
+* foreign keys
+* uniqueness constraints
+* usage validation constraints
+* tenant-scoped idempotency uniqueness
+* indexes for expected query paths
 
-A `stripe_events` table is also present to provide database-level support for future Stripe webhook deduplication.
+Seeded:
 
----
+```text
+Free plan
+Pro plan
+tenant-001
+tenant-002
+```
 
-## Evidence 3 — Plans and Quotas
+Both demo tenants initially use the Free plan.
 
-### Verification
+## Development issue — Docker daemon
 
-Command:
+Initial attempt to start PostgreSQL failed because the Docker daemon was not running.
+
+Observed problem:
+
+```text
+Docker daemon was unavailable.
+```
+
+Correction:
+
+Started Docker Desktop and verified:
 
 ```powershell
-docker compose exec db psql -P pager=off -U capstone_user -d capstone_db -c "SELECT code, name, api_call_limit, ai_token_limit FROM plans ORDER BY code;"
+docker info
 ```
 
-Observed:
-
-```text
- code | name | api_call_limit | ai_token_limit
-------+------+----------------+---------------
- free | Free |           1000 |         100000
- pro  | Pro  |          10000 |        1000000
-(2 rows)
-```
-
-### Result
-
-Both required plans exist.
-
-Free:
-
-* 1,000 API calls/month
-* 100,000 AI tokens/month
-
-Pro:
-
-* 10,000 API calls/month
-* 1,000,000 AI tokens/month
-
----
-
-## Evidence 4 — Tenant Subscriptions
-
-### Verification
-
-Command:
+After Docker Desktop was running:
 
 ```powershell
-docker compose exec db psql -P pager=off -U capstone_user -d capstone_db -c "SELECT t.tenant_key, t.name, p.code AS plan, s.status FROM subscriptions s JOIN tenants t ON t.id = s.tenant_id JOIN plans p ON p.id = s.plan_id ORDER BY t.tenant_key;"
+docker compose up -d db
 ```
 
-Observed:
+successfully created and started the PostgreSQL container.
+
+## Development issue — PostgreSQL pager
+
+Some `psql` output opened in the terminal pager.
+
+This was resolved by using:
+
+```powershell
+-P pager=off
+```
+
+when necessary.
+
+## Python environment
+
+Created a local Python virtual environment:
 
 ```text
- tenant_key |      name       | plan | status
-------------+-----------------+------+--------
- tenant-001 | Demo Tenant One | free | active
- tenant-002 | Demo Tenant Two | free | active
-(2 rows)
+.venv/
 ```
 
-### Result
+Installed project dependencies from:
 
-Two demo tenants exist and each has an active Free subscription.
+```text
+requirements.txt
+```
+
+The virtual environment and `.env` are ignored by Git.
 
 ---
 
-## Evidence 5 — Tenant Isolation Constraints
+# Stage 2 — Core API + Tenant Handling
 
-### Requirement
+## Work completed
 
-Usage and subscription records must be associated with the correct tenant.
-
-### Database design
-
-`subscriptions.tenant_id` references:
+Added the initial FastAPI application structure:
 
 ```text
-tenants.id
+app/
+├── main.py
+├── config.py
+├── db.py
+├── dependencies.py
+├── repositories/
+├── routes/
+└── schemas/
 ```
 
-`usage_events.tenant_id` references:
+Implemented:
+
+* FastAPI application
+* environment-based configuration
+* PostgreSQL connection function
+* tenant repository
+* tenant dependency
+* tenant response schema
+* `/health`
+* `/tenants/me`
+
+The application now follows a basic layered structure:
 
 ```text
-tenants.id
+HTTP route
+    ↓
+dependency / validation
+    ↓
+repository
+    ↓
+database connection
+    ↓
+PostgreSQL
 ```
-
-Both relationships use foreign keys.
-
-The `subscriptions` table also enforces one subscription per tenant through a unique constraint on `tenant_id`.
-
-### Result
-
-The database prevents subscription and usage records from referencing nonexistent tenants.
-
-Application-level tenant request handling will be implemented in Stage 2.
 
 ---
 
-## Evidence 6 — Usage Idempotency Constraint
+## Configuration issue — Missing DATABASE_URL
 
-### Requirement
-
-The completed system must prevent duplicate usage events when the same request is retried with the same idempotency key.
-
-### Database design
-
-`usage_events` contains:
+Initial attempt to start Uvicorn produced:
 
 ```text
-CONSTRAINT uq_usage_events_tenant_idempotency
-UNIQUE (tenant_id, idempotency_key)
+pydantic_core.ValidationError
+
+database_url
+Field required
 ```
 
-### Result
+The cause was that the application expected:
 
-The database provides a uniqueness guarantee for a tenant's idempotency key.
+```text
+DATABASE_URL
+```
 
-The actual API retry behavior will be implemented and tested in Stage 3.
+from the local `.env` file, but the variable was not available.
+
+Correction:
+
+Created the local `.env` file using the development PostgreSQL connection:
+
+```text
+postgresql://capstone_user:change_me@localhost:5432/capstone_db
+```
+
+The distinction between `localhost` and the Docker service hostname `db` was important:
+
+* FastAPI is currently running directly on Windows.
+* PostgreSQL is running inside Docker.
+* Therefore the host-side FastAPI application connects through `localhost:5432`.
+
+After the correction, FastAPI started successfully.
 
 ---
 
-## Evidence 7 — Usage Validation Constraints
+## Tenant handling
 
-The `usage_events` table contains database checks including:
-
-```text
-quantity > 0
-input_tokens >= 0
-cached_input_tokens >= 0
-cached_input_tokens <= input_tokens
-output_tokens >= 0
-reasoning_tokens >= 0
-```
-
-The `usage_type` field is restricted to:
+Implemented tenant identification through:
 
 ```text
-api_calls
-ai_tokens
+X-Tenant-Key
 ```
 
-### Result
+The dependency:
 
-Invalid usage values are rejected at the database boundary.
+1. Checks whether the header exists.
+2. Looks up the tenant.
+3. Rejects unknown tenants.
+4. Provides the resolved tenant to the route.
+
+Current behavior:
+
+```text
+Missing header → 400
+Unknown tenant → 404
+Known tenant   → 200
+```
+
+The tenant repository joins:
+
+```text
+tenants
+subscriptions
+plans
+```
+
+so the API can return the tenant's current plan and limits.
 
 ---
 
-## Evidence 8 — Database Indexes
+# Automated Testing
 
-Indexes were created for the expected lookup patterns.
-
-Current indexes include:
+Added:
 
 ```text
-idx_subscriptions_plan_id
-
-idx_usage_events_tenant_occurred_at
-
-idx_usage_events_tenant_usage_type_occurred_at
-
-idx_stripe_events_event_type
+tests/test_tenants.py
 ```
 
-Unique indexes also exist for:
+Tests cover:
 
 ```text
-tenant_key
-plan code
-stripe customer ID
-stripe subscription ID
-stripe event ID
-tenant + idempotency key
+health endpoint
+tenant lookup
+missing tenant header
+unknown tenant
 ```
 
-### Result
+Also added:
 
-The database has indexes supporting tenant usage queries, subscription lookups, plan lookups, and Stripe event deduplication.
+```text
+pytest.ini
+```
+
+to make the project root available to pytest.
 
 ---
 
-## Evidence 9 — Seeded Database Row Counts
+## Testing issue — pytest could not import app
 
-Expected Stage 1 baseline:
+Initial command:
 
-```text
-plans            = 2
-tenants          = 2
-subscriptions    = 2
-usage_events     = 0
-stripe_events    = 0
+```powershell
+pytest -q
 ```
 
-The zero usage-event and Stripe-event counts are expected because those application features have not yet been implemented.
+failed during test collection:
+
+```text
+ModuleNotFoundError: No module named 'app'
+```
+
+The API itself could already be launched with:
+
+```powershell
+uvicorn app.main:app --reload
+```
+
+so the issue was specific to pytest's module import path.
+
+Correction:
+
+Created:
+
+```text
+pytest.ini
+```
+
+with:
+
+```ini
+[pytest]
+pythonpath = .
+```
+
+After the correction:
+
+```text
+4 passed
+```
 
 ---
 
-# Requirements Not Yet Implemented
+## Test result
 
-The following evidence will be added during later stages.
+Final Stage 2 test execution:
 
-## Metering
+```text
+pytest -q
 
-* Exactly-once billable usage recording
-* Idempotent API retry demonstration
+....                                                      [100%]
 
-## Quotas
+4 passed, 1 warning
+```
 
-* Monthly quota calculation
-* Boundary test
-* `429` response
-* `402` response where applicable
+The warning is a Starlette/FastAPI test-client deprecation warning concerning the current `httpx` integration. It did not cause test failure, so no dependency change was made at this checkpoint.
 
-## Cost Calculation
+---
 
-* API-call cost
-* AI token cost
-* Cached-input pricing
-* Reasoning-token pricing
-* Integer money calculations
+# AI Assistance
 
-## Stripe
+AI assistance was used throughout the project for:
 
-* Checkout flow
-* `checkout.session.completed`
-* `customer.subscription.updated`
-* `customer.subscription.deleted`
-* Webhook signature verification
-* Forged webhook rejection
-* Duplicate event handling
-* Subscription/plan synchronization
+* breaking the capstone into implementation stages
+* explaining the requirements
+* suggesting the database schema structure
+* reviewing implementation decisions
+* generating initial code drafts
+* explaining PostgreSQL and Docker behavior
+* diagnosing command-line and Python errors
+* suggesting tests
+* preparing documentation structure
 
-## Background Worker
+The developer reviewed the generated code, executed the commands, inspected actual results, and corrected issues based on those results.
 
-* Background job
-* Retry behavior
-* Failure handling
+AI-generated suggestions were not treated as automatically correct.
 
-## Final Testing
+Examples of corrections during development include:
 
-* Full automated test suite
-* Evaluator probe results
-* Final end-to-end evidence
+1. Docker daemon needed to be started before PostgreSQL could run.
+2. PostgreSQL host configuration needed to use `localhost` when FastAPI was running on Windows outside Docker.
+3. Pytest required an explicit project-root Python path through `pytest.ini`.
+4. The Starlette/httpx warning was recognized as a warning rather than incorrectly treating it as a test failure.
+
+---
+
+# Current Status
+
+Completed:
+
+```text
+Stage 0 — Project Setup + Design
+Stage 1 — Database Foundation
+Stage 2 — Core API + Tenant Handling
+```
+
+Next:
+
+```text
+Stage 3 — Usage Metering + Idempotency
+```
+
+Stage 3 will introduce the actual billable usage path and the requirement that:
+
+```text
+same request + same idempotency key
+→ exactly one usage event
+```
+
+Future stages will add quota enforcement, cost calculation, Stripe integration, background processing, final evidence, and submission cleanup.
+
+---
+
+# Development Principle
+
+The project is being built incrementally.
+
+A stage is treated as complete only after:
+
+1. implementation exists,
+2. the behavior is tested,
+3. errors encountered during development are understood,
+4. documentation reflects the actual state,
+5. and a Git checkpoint is created.
