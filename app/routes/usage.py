@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-
+from app.services.quota_service import check_ai_token_quota
 from app.dependencies import get_current_tenant
 from app.repositories.usage_repository import create_usage_event
 from app.schemas.usage import GenerateRequest, UsageResponse
@@ -27,6 +27,16 @@ def generate(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Idempotency-Key must be 255 characters or fewer.",
         )
+
+    check_ai_token_quota(
+        tenant_id=tenant["id"],
+        requested_tokens=(
+            request.input_tokens
+            + request.output_tokens
+            + request.reasoning_tokens
+        ),
+        ai_token_limit=tenant["ai_token_limit"],
+    )
 
     usage_event = create_usage_event(
         tenant_id=tenant["id"],
