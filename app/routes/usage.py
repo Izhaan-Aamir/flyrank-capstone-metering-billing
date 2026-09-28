@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from app.services.quota_service import check_ai_token_quota
+
 from app.dependencies import get_current_tenant
 from app.repositories.usage_repository import create_usage_event
 from app.schemas.usage import GenerateRequest, UsageResponse
+from app.services.pricing_service import calculate_cost
+from app.services.quota_service import check_ai_token_quota
 
 
 router = APIRouter(
@@ -28,13 +30,15 @@ def generate(
             detail="Idempotency-Key must be 255 characters or fewer.",
         )
 
+    requested_tokens = (
+        request.input_tokens
+        + request.output_tokens
+        + request.reasoning_tokens
+    )
+
     check_ai_token_quota(
         tenant_id=tenant["id"],
-        requested_tokens=(
-            request.input_tokens
-            + request.output_tokens
-            + request.reasoning_tokens
-        ),
+        requested_tokens=requested_tokens,
         ai_token_limit=tenant["ai_token_limit"],
     )
 
@@ -47,6 +51,13 @@ def generate(
         reasoning_tokens=request.reasoning_tokens,
     )
 
+    cost_micro_units = calculate_cost(
+        input_tokens=usage_event["input_tokens"],
+        cached_input_tokens=usage_event["cached_input_tokens"],
+        output_tokens=usage_event["output_tokens"],
+        reasoning_tokens=usage_event["reasoning_tokens"],
+    )
+
     return {
         "usage_event_id": usage_event["usage_event_id"],
         "tenant_key": tenant["tenant_key"],
@@ -56,4 +67,5 @@ def generate(
         "cached_input_tokens": usage_event["cached_input_tokens"],
         "output_tokens": usage_event["output_tokens"],
         "reasoning_tokens": usage_event["reasoning_tokens"],
+        "cost_micro_units": cost_micro_units,
     }

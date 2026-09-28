@@ -37,3 +37,4 @@ class UsageResponse(BaseModel):
     cached_input_tokens: int
     output_tokens: int
     reasoning_tokens: int
+    cost_micro_units: int

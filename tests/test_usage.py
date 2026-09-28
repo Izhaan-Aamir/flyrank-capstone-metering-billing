@@ -24,6 +24,8 @@ def clear_tenant_usage(tenant_key: str):
 
 clear_tenant_usage("tenant-001")
 def test_generate_creates_usage_event():
+    clear_tenant_usage("tenant-001")
+
     response = client.post(
         "/generate",
         headers={
@@ -49,6 +51,13 @@ def test_generate_creates_usage_event():
     assert data["cached_input_tokens"] == 200
     assert data["output_tokens"] == 500
     assert data["reasoning_tokens"] == 100
+
+    assert data["cost_micro_units"] == (
+        800 * 1_000_000
+        + 200 * 250_000
+        + 500 * 2_000_000
+        + 100 * 2_000_000
+    )
 
 clear_tenant_usage("tenant-001")
 def test_same_idempotency_key_returns_same_event():
