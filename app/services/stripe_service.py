@@ -18,8 +18,11 @@ def create_checkout_session(
                 "quantity": 1,
             }
         ],
-        metadata={
-            "tenant_id": tenant_id,
+        metadata={"tenant_id": tenant_id},
+        subscription_data={
+            "metadata": {
+                "tenant_id": tenant_id,
+            },
         },
         customer_email=customer_email,
         success_url="http://127.0.0.1:8000/checkout/success",
