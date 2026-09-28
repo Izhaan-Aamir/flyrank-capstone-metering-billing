@@ -1,11 +1,104 @@
-run: docker compose up --build
-seed: python scripts/seed.py
-test: pytest
-base_url: http://localhost:8000
+```yaml
+project:
+  name: flyrank-usage-metering-billing-engine
+  description: >
+    Usage metering and billing engine with tenant isolation, quota enforcement,
+    idempotent usage recording, integer-based cost calculation, Stripe test-mode
+    subscription checkout and webhook synchronization, and a background worker.
+
+run:
+  command: uvicorn app.main:app --reload
+
+seed:
+  command: python -m scripts.seed
+
+test:
+  command: pytest -q
+
+base_url: http://127.0.0.1:8000
 
 endpoints:
-  - /health
-  - /generate
-  - /usage
-  - /billing/checkout
-  - /webhooks/stripe
+  - method: GET
+    path: /health
+    description: Application health check
+
+  - method: GET
+    path: /tenants/me
+    headers:
+      X-Tenant-Key: tenant-001
+    description: Retrieve the current tenant and its subscription/plan information
+
+  - method: POST
+    path: /generate
+    headers:
+      X-Tenant-Key: tenant-001
+      Idempotency-Key: example-usage-key
+    body:
+      input_tokens: 100
+      cached_input_tokens: 20
+      output_tokens: 50
+      reasoning_tokens: 10
+    description: >
+      Billable AI usage endpoint. Validates the token breakdown, checks the
+      current-month AI-token quota, creates an idempotent usage event, and
+      calculates the resulting cost in integer micro-units.
+
+  - method: POST
+    path: /checkout/pro
+    headers:
+      X-Tenant-Key: tenant-001
+    description: >
+      Creates a Stripe test-mode Checkout Session for the Pro subscription.
+
+  - method: POST
+    path: /webhooks/stripe
+    headers:
+      Stripe-Signature: <stripe-generated-signature>
+    description: >
+      Receives and verifies Stripe webhook events, deduplicates processed
+      events, and synchronizes the local subscription state.
+
+stripe:
+  mode: test
+  required_webhook_events:
+    - checkout.session.completed
+    - customer.subscription.updated
+    - customer.subscription.deleted
+
+plans:
+  - code: free
+    name: Free
+    api_call_limit: 1000
+    ai_token_limit: 100000
+
+  - code: pro
+    name: Pro
+    api_call_limit: 10000
+    ai_token_limit: 1000000
+
+usage:
+  supported_types:
+    - api_calls
+    - ai_tokens
+
+  idempotency:
+    header: Idempotency-Key
+    scope: tenant
+    required: true
+
+quota:
+  ai_tokens:
+    calculation: current_month_usage_plus_requested_usage
+    rejection_status: 429
+
+pricing:
+  currency_representation: integer_micro_units
+  input_price: 1000000
+  cached_input_price: 250000
+  output_price: 2000000
+  reasoning_price: 2000000
+
+worker:
+  job_types:
+    - finalize_usage
+```
